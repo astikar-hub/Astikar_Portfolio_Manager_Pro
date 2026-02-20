@@ -27,7 +27,7 @@ REGIME_MA = 200
 CRASH_THRESHOLD = -0.12
 
 TELEGRAM_BOT_TOKEN = "PUT_YOUR_NEW_TOKEN_HERE"
-TELEGRAM_CHAT_ID = "Input_Chat 8144938221"
+TELEGRAM_CHAT_ID = "8144938221"
 
 # ================= UTILITIES =================
 
@@ -202,4 +202,5 @@ def main():
     save_positions(positions)
 
 if __name__ == "__main__":
+
     main()
