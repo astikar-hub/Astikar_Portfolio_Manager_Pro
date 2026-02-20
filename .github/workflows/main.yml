@@ -2,8 +2,8 @@ name: Weekly Fund Rebalance
 
 on:
   schedule:
-    - cron: '0 10 * * FRI'   # Every Friday 10:00 UTC (3:30 PM IST)
-  workflow_dispatch:         # Allows manual run
+    - cron: '0 10 * * FRI'
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -12,6 +12,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        persist-credentials: true
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -28,3 +30,11 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
         python Astikar_Portfolio_Manager_Pro.py
+
+    - name: Commit updated files
+      run: |
+        git config user.name "github-actions"
+        git config user.email "actions@github.com"
+        git add nav_history.csv portfolio_history.csv trades_log.csv
+        git diff --quiet && git diff --staged --quiet || git commit -m "Auto update portfolio state"
+        git push
