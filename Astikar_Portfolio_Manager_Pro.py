@@ -226,4 +226,24 @@ def main():
     print("Execution complete.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        
+        error_details = traceback.format_exc()
+        error_message = f"""
+❌ <b>Astikar Fund Engine Error</b>
+
+Time: {datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")}
+
+Error:
+{str(e)}
+
+Details:
+{error_details}
+"""
+        send_telegram_message(error_message)
+        print("Error occurred. Telegram alert sent.")
+        raise
+
