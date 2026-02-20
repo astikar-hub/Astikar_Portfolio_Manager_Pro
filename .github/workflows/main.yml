@@ -1,8 +1,12 @@
 name: Weekly Fund Rebalance
 
+permissions:
+  contents: write
+
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '0 10 * * FRI'
+    - cron: '30 11 * * 6'
   workflow_dispatch:
 
 jobs:
