@@ -1,0 +1,30 @@
+name: Weekly Fund Rebalance
+
+on:
+  schedule:
+    - cron: '0 10 * * FRI'   # Every Friday 10:00 UTC (3:30 PM IST)
+  workflow_dispatch:         # Allows manual run
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Run Portfolio Manager
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python Astikar_Portfolio_Manager_Pro.py
