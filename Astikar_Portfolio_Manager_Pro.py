@@ -1,6 +1,11 @@
 def main():
     print("Starting portfolio engine...")
 
+    # =========================
+    # DRAWDOWN CONFIG
+    # =========================
+    DRAWDOWN_ALERT_THRESHOLD = 0.15  # 15% drawdown alert
+
     nav_df = load_or_create_csv(NAV_FILE, ["Date", "NAV"])
     portfolio_df = load_or_create_csv(PORTFOLIO_FILE, ["Symbol", "Shares"])
     trades_df = load_or_create_csv(TRADES_FILE, ["Date", "Symbol", "Action", "Price", "Shares", "Cost"])
