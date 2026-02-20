@@ -6,7 +6,7 @@ permissions:
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 11 * * 6'
+    - cron: '0 12 * * 5'
 
 jobs:
   run-script:
