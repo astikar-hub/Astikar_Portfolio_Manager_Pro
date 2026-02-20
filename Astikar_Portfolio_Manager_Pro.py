@@ -26,8 +26,8 @@ MAX_POSITION_MULTIPLIER = 2.0
 REGIME_MA = 200
 CRASH_THRESHOLD = -0.12
 
-TELEGRAM_BOT_TOKEN = "PUT_YOUR_NEW_TOKEN_HERE"
-TELEGRAM_CHAT_ID = "8144938221"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # ================= UTILITIES =================
 
@@ -204,3 +204,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
