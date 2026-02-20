@@ -98,6 +98,28 @@ Rebalance aborted for safety.
     invested_value = calculate_portfolio_value(portfolio, latest_prices)
     nav = invested_value + cash
 
+    # =========================
+    # DRAWDOWN MONITORING SYSTEM
+    # =========================
+
+    if not nav_df.empty:
+        historical_peak = nav_df["NAV"].max()
+        peak_nav = max(historical_peak, nav)
+    else:
+        peak_nav = nav
+
+    drawdown = (nav - peak_nav) / peak_nav
+
+    if drawdown <= -DRAWDOWN_ALERT_THRESHOLD:
+        dd_message = f"""
+⚠️ <b>Drawdown Alert</b>
+
+Peak NAV: ₹{peak_nav:,.2f}
+Current NAV: ₹{nav:,.2f}
+Drawdown: {drawdown:.2%}
+"""
+        send_telegram_message(dd_message)
+
     # Save NAV
     nav_df.loc[len(nav_df)] = [today, nav]
     nav_df.to_csv(NAV_FILE, index=False)
