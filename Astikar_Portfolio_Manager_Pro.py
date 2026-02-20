@@ -1,207 +1,229 @@
-# ============================================
-# ASTIKAR FUND SYSTEM - WEEKLY PRO ENGINE
-# Weekly Rebalance + Pyramiding + Telegram
-# ============================================
-
 import os
-import sys
 import pandas as pd
 import numpy as np
 import yfinance as yf
 import requests
 from datetime import datetime
+import pytz
 
-# ================= CONFIG =================
-UNIVERSE_FILE = "nifty200.csv"
-SECTOR_FILE = "sector_mapping.csv"
-POSITIONS_FILE = "portfolio_positions.csv"
+# =========================
+# CONFIGURATION
+# =========================
 
-INDEX_SYMBOL = "^NSEI"
-CAPITAL = 50000
-TOP_N = 10
-
-MAX_ADDS = 2
-MAX_POSITION_MULTIPLIER = 2.0
-
-REGIME_MA = 200
-CRASH_THRESHOLD = -0.12
+INITIAL_CAPITAL = 50000
+MAX_STOCKS = 5
+BROKERAGE_RATE = 0.001  # 0.1%
+MIN_CASH_BUFFER = 0.10
+TIMEZONE = "Asia/Kolkata"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ================= UTILITIES =================
+NAV_FILE = "nav_history.csv"
+PORTFOLIO_FILE = "portfolio_history.csv"
+TRADES_FILE = "trades_log.csv"
+UNIVERSE_FILE = "nifty200.csv"
 
-def send_telegram(message):
+# =========================
+# UTILITY FUNCTIONS
+# =========================
+
+def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram credentials missing.")
+        return
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    requests.post(url, data=payload)
 
-    try:
-        resp = requests.post(url, data=data)
-        print("Telegram:", resp.text)
-    except Exception as e:
-        print("Telegram error:", e)
+def is_friday():
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+    return now.weekday() == 4  # Friday
 
-def safe_read_csv(filepath):
-    try:
-        return pd.read_csv(filepath, encoding="utf-8")
-    except:
-        return pd.read_csv(filepath, encoding="latin1")
+def load_or_create_csv(file, columns):
+    if os.path.exists(file):
+        return pd.read_csv(file)
+    else:
+        df = pd.DataFrame(columns=columns)
+        df.to_csv(file, index=False)
+        return df
 
-# ================= LOADERS =================
+# =========================
+# DATA FUNCTIONS
+# =========================
 
-def load_universe():
-    df = safe_read_csv(UNIVERSE_FILE)
-    tickers = df.iloc[:, 0].dropna().astype(str).tolist()
-    return [t if t.endswith(".NS") else t + ".NS" for t in tickers]
+def download_data(symbols):
+    data = yf.download(symbols, period="1y", interval="1d", auto_adjust=True, progress=False)
+    return data["Close"]
 
-def load_sector_mapping():
-    if not os.path.exists(SECTOR_FILE):
-        return {}
-    df = safe_read_csv(SECTOR_FILE)
-    df["Ticker"] = df["Symbol"].apply(lambda x: x if x.endswith(".NS") else x + ".NS")
-    return dict(zip(df["Ticker"], df["Sector"]))
+def calculate_momentum(close):
+    momentum_3m = close.pct_change(63)
+    momentum_6m = close.pct_change(126)
+    return momentum_3m.iloc[-1], momentum_6m.iloc[-1]
 
-def load_positions():
-    if not os.path.exists(POSITIONS_FILE):
-        return pd.DataFrame(columns=["Ticker","Shares","Avg_Cost","Adds"])
+def calculate_dma(close):
+    dma_50 = close.rolling(50).mean().iloc[-1]
+    dma_200 = close.rolling(200).mean().iloc[-1]
+    return dma_50, dma_200
 
-    df = safe_read_csv(POSITIONS_FILE)
+# =========================
+# PORTFOLIO LOGIC
+# =========================
 
-    df = df.dropna(subset=["Ticker"])
-    df["Ticker"] = df["Ticker"].astype(str).str.strip()
-    df = df[df["Ticker"] != ""]
-    df = df[df["Ticker"].str.lower() != "nan"]
+def get_universe():
+    df = pd.read_csv(UNIVERSE_FILE)
+    return df['Symbol'].tolist()
 
-    return df.reset_index(drop=True)
+def select_stocks(symbols):
+    selected = []
+    close_data = download_data(symbols)
 
-def save_positions(df):
-    df.to_csv(POSITIONS_FILE, index=False)
+    for symbol in symbols:
+        try:
+            close = close_data[symbol].dropna()
+            if len(close) < 200:
+                continue
 
-# ================= FILTERS =================
+            m3, m6 = calculate_momentum(close)
+            dma50, dma200 = calculate_dma(close)
+            price = close.iloc[-1]
 
-def extract_close(data):
-    if isinstance(data.columns, pd.MultiIndex):
-        data = data["Close"]
-    return data
+            if (
+                price > dma200 and
+                dma50 > dma200 and
+                m3 > 0 and
+                m6 > 0
+            ):
+                score = m3 + m6
+                selected.append((symbol, score))
+        except:
+            continue
 
-def regime_filter():
-    raw = yf.download(INDEX_SYMBOL, period="1y", auto_adjust=True, progress=False)
-    index = raw["Close"]
-    ma = index.rolling(REGIME_MA).mean()
-    return float(index.iloc[-1]) > float(ma.iloc[-1])
+    selected.sort(key=lambda x: x[1], reverse=True)
+    return [s[0] for s in selected[:MAX_STOCKS]]
 
-def crash_filter():
-    raw = yf.download(INDEX_SYMBOL, period="6mo", auto_adjust=True, progress=False)
-    index = raw["Close"]
-    ret_3m = (float(index.iloc[-1]) / float(index.iloc[-63])) - 1
-    return ret_3m >= CRASH_THRESHOLD
+def calculate_portfolio_value(portfolio, close_prices):
+    total = 0
+    for symbol, shares in portfolio.items():
+        if symbol in close_prices:
+            total += shares * close_prices[symbol]
+    return total
 
-# ================= PORTFOLIO ENGINE =================
-
-def generate_portfolio(data):
-    weekly = data.resample("W-FRI").last()
-    weekly = weekly.dropna(axis=1, thresh=13)
-
-    returns = weekly.pct_change(12)
-    momentum = returns.iloc[-1].dropna().sort_values(ascending=False)
-
-    return momentum.head(TOP_N).index.tolist()
-
-def generate_orders(selected, price_data):
-
-    sector_map = load_sector_mapping()
-    positions = load_positions()
-
-    prev_portfolio = positions["Ticker"].tolist()
-    sell_list = list(set(prev_portfolio) - set(selected))
-
-    orders = []
-    base_allocation = CAPITAL / TOP_N
-
-    # SELL
-    for ticker in sell_list:
-        sector = sector_map.get(ticker,"Unknown")
-        orders.append(("SELL_ALL", ticker, sector, 0, 0, 0))
-        positions = positions[positions["Ticker"] != ticker]
-
-    # BUY / ADD
-    for ticker in selected:
-
-        price = float(price_data[ticker].iloc[-1])
-        sector = sector_map.get(ticker,"Unknown")
-        existing = positions[positions["Ticker"] == ticker]
-
-        if existing.empty:
-            qty = int(base_allocation / price)
-            if qty > 0:
-                orders.append(("BUY", ticker, sector, qty, price, qty*price))
-                new_row = pd.DataFrame([{
-                    "Ticker": ticker,
-                    "Shares": qty,
-                    "Avg_Cost": price,
-                    "Adds": 0
-                }])
-                positions = pd.concat([positions, new_row], ignore_index=True)
-
-        else:
-            shares = existing["Shares"].values[0]
-            avg_cost = existing["Avg_Cost"].values[0]
-            adds = existing["Adds"].values[0]
-
-            max_value = base_allocation * MAX_POSITION_MULTIPLIER
-            current_value = shares * price
-
-            if adds < MAX_ADDS and price > avg_cost and current_value < max_value:
-                add_qty = int(base_allocation / price)
-                if add_qty > 0:
-                    orders.append((f"ADD_{adds+1}", ticker, sector, add_qty, price, add_qty*price))
-
-                    new_shares = shares + add_qty
-                    new_avg = ((shares*avg_cost)+(add_qty*price))/new_shares
-
-                    positions.loc[positions["Ticker"]==ticker,
-                                  ["Shares","Avg_Cost","Adds"]] = [new_shares,new_avg,adds+1]
-
-    return orders, positions
-
-# ================= MAIN =================
+# =========================
+# MAIN EXECUTION
+# =========================
 
 def main():
+    print("Starting portfolio engine...")
 
-    print("ASTIKAR FUND SYSTEM RUNNING...")
+    nav_df = load_or_create_csv(NAV_FILE, ["Date", "NAV"])
+    portfolio_df = load_or_create_csv(PORTFOLIO_FILE, ["Symbol", "Shares"])
+    trades_df = load_or_create_csv(TRADES_FILE, ["Date", "Symbol", "Action", "Price", "Shares", "Cost"])
 
-    tickers = load_universe()
-    data = yf.download(tickers, period="12mo", interval="1d", auto_adjust=True, progress=True)
+    today = datetime.now(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
 
-    if isinstance(data.columns, pd.MultiIndex):
-        data = data["Close"]
+    universe = get_universe()
+    close_data = download_data(universe)
 
-    if not regime_filter():
-        send_telegram("📉 Weekly System: Market not bullish. No allocation.")
-        return
+    latest_prices = close_data.iloc[-1].to_dict()
 
-    if not crash_filter():
-        send_telegram("⚠️ Weekly System: Crash threshold triggered.")
-        return
+    # Load portfolio
+    portfolio = {}
+    if not portfolio_df.empty:
+        for _, row in portfolio_df.iterrows():
+            portfolio[row["Symbol"]] = row["Shares"]
 
-    selected = generate_portfolio(data)
-    orders, positions = generate_orders(selected, data)
+    # If first run
+    if nav_df.empty:
+        capital = INITIAL_CAPITAL
+    else:
+        capital = nav_df.iloc[-1]["NAV"]
 
-    total_used = sum([o[5] for o in orders])
-    balance = CAPITAL - total_used
+    # Calculate current value
+    invested_value = calculate_portfolio_value(portfolio, latest_prices)
+    cash = capital - invested_value
 
-    msg = f"📊 ASTIKAR WEEKLY REBALANCE\n\nBalance: ₹{round(balance,2)}\n\n"
+    message_lines = []
+    message_lines.append(f"📊 <b>Astikar Fund Weekly Report</b>")
+    message_lines.append(f"Date: {today}")
 
-    for action,ticker,sector,qty,price,value in orders:
-        if action == "SELL_ALL":
-            msg += f"🔻 SELL {ticker}\n"
-        else:
-            msg += f"🟢 {action} {ticker} — {qty} @ ₹{round(price,2)}\n"
+    if is_friday():
+        message_lines.append("🔁 Rebalance executed.")
 
-    send_telegram(msg)
-    save_positions(positions)
+        selected = select_stocks(universe)
+
+        # SELL stocks not in selected
+        for symbol in list(portfolio.keys()):
+            if symbol not in selected:
+                price = latest_prices.get(symbol, 0)
+                shares = portfolio[symbol]
+                proceeds = shares * price
+                cost = proceeds * BROKERAGE_RATE
+                cash += proceeds - cost
+
+                trades_df.loc[len(trades_df)] = [
+                    today, symbol, "SELL", price, shares, cost
+                ]
+
+                del portfolio[symbol]
+
+        # BUY new stocks
+        allocation = capital * (1 - MIN_CASH_BUFFER) / MAX_STOCKS
+
+        for symbol in selected:
+            if symbol not in portfolio:
+                price = latest_prices.get(symbol, 0)
+                if price == 0:
+                    continue
+
+                shares = int(allocation / price)
+                cost = shares * price * BROKERAGE_RATE
+                total_cost = shares * price + cost
+
+                if shares > 0 and cash >= total_cost:
+                    cash -= total_cost
+                    portfolio[symbol] = shares
+
+                    trades_df.loc[len(trades_df)] = [
+                        today, symbol, "BUY", price, shares, cost
+                    ]
+
+    else:
+        message_lines.append("ℹ️ Not Friday. No rebalance.")
+
+    # Recalculate portfolio value
+    invested_value = calculate_portfolio_value(portfolio, latest_prices)
+    nav = invested_value + cash
+
+    # Save NAV
+    nav_df.loc[len(nav_df)] = [today, nav]
+    nav_df.to_csv(NAV_FILE, index=False)
+
+    # Save portfolio
+    portfolio_df = pd.DataFrame([
+        {"Symbol": s, "Shares": sh} for s, sh in portfolio.items()
+    ])
+    portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
+
+    # Save trades
+    trades_df.to_csv(TRADES_FILE, index=False)
+
+    # Reporting
+    total_return = ((nav - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100
+    message_lines.append(f"💰 NAV: ₹{nav:,.2f}")
+    message_lines.append(f"📈 Total Return: {total_return:.2f}%")
+    message_lines.append(f"💵 Cash: ₹{cash:,.2f}")
+    message_lines.append(f"📊 Holdings: {len(portfolio)} stocks")
+
+    send_telegram_message("\n".join(message_lines))
+
+    print("Execution complete.")
 
 if __name__ == "__main__":
-
     main()
-
